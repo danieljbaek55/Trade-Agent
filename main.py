@@ -13,6 +13,14 @@ Usage:
 """
 import sys
 import os
+
+# Load .env before importing anything that reads env vars
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import agent
 import portfolio as port
 import config

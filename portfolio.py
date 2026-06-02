@@ -49,6 +49,8 @@ def open_trade(portfolio: dict, opt: dict) -> dict:
         "cost": opt["total_cost"],
         "status": "open",
         "signal_reasons": opt.get("signal_reasons", []),
+        "order_id": opt.get("order_id"),
+        "occ_symbol": opt.get("occ_symbol"),
     }
     portfolio["cash"] = round(portfolio["cash"] - opt["total_cost"], 2)
     portfolio["positions"].append(position)
