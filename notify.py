@@ -1,60 +1,94 @@
 """
-Discord webhook notifications for trade events.
-Silent no-op when DISCORD_WEBHOOK_URL is unset, so local/demo runs don't ping.
+Email notifications for trade events via SMTP.
+Silent no-op when EMAIL_USERNAME / EMAIL_PASSWORD aren't set,
+so local/demo runs don't try to send.
+
+Defaults to Gmail SMTP. Override with EMAIL_HOST / EMAIL_PORT for other providers.
 """
-import json
 import os
-import urllib.request
+import smtplib
+from email.message import EmailMessage
 
 
 def _enabled() -> bool:
-    return bool(os.getenv("DISCORD_WEBHOOK_URL"))
+    return bool(os.getenv("EMAIL_USERNAME") and os.getenv("EMAIL_PASSWORD"))
 
 
-def _post(payload: dict) -> None:
-    url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not url:
+def _send(subject: str, body_html: str, body_text: str) -> None:
+    user = os.getenv("EMAIL_USERNAME")
+    password = os.getenv("EMAIL_PASSWORD")
+    if not (user and password):
         return
+
+    host = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+    port = int(os.getenv("EMAIL_PORT", "587"))
+    to_addr = os.getenv("EMAIL_TO", user)
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = to_addr
+    msg.set_content(body_text)
+    msg.add_alternative(body_html, subtype="html")
+
     try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=10).read()
+        with smtplib.SMTP(host, port, timeout=15) as smtp:
+            smtp.starttls()
+            smtp.login(user, password)
+            smtp.send_message(msg)
     except Exception as e:
-        print(f"  [notify] Discord post failed: {e}")
+        print(f"  [notify] Email send failed: {e}")
+
+
+def _row(label: str, value: str) -> str:
+    return (
+        f'<tr><td style="padding:4px 12px 4px 0;color:#666;font-size:13px;">{label}</td>'
+        f'<td style="padding:4px 0;font-weight:600;font-size:14px;">{value}</td></tr>'
+    )
 
 
 def trade_opened(pos: dict) -> None:
     if not _enabled():
         return
 
-    tier = pos.get("conviction_tier", "STANDARD")
-    color = 0x9333EA if tier == "HIGH_CONVICTION" else 0x22C55E  # purple / green
     direction = "CALL" if pos["option_type"] == "call" else "PUT"
+    tier = pos.get("conviction_tier", "STANDARD")
+    accent = "#9333ea" if tier == "HIGH_CONVICTION" else "#22c55e"
     reasons = pos.get("signal_reasons", [])
 
-    fields = [
-        {"name": "Contracts", "value": f"{pos['contracts']}x", "inline": True},
-        {"name": "Entry", "value": f"${pos['entry_price']:.2f}/sh", "inline": True},
-        {"name": "Cost", "value": f"${pos['cost']:.2f}", "inline": True},
-        {"name": "DTE", "value": str(pos["dte_at_entry"]), "inline": True},
-        {"name": "Tier", "value": tier, "inline": True},
-        {"name": "Regime", "value": pos.get("regime_at_entry", "?"), "inline": True},
-    ]
-    if reasons:
-        fields.append({"name": "Signal", "value": " · ".join(reasons), "inline": False})
+    subject = (
+        f"[Trade Agent] BOUGHT {pos['contracts']}x {pos['ticker']} "
+        f"${pos['strike']:.0f}{direction[0]} exp {pos['expiry']}"
+    )
 
-    _post({
-        "username": "Trade Agent",
-        "embeds": [{
-            "title": f"BOUGHT {pos['ticker']} ${pos['strike']:.0f} {direction} {pos['expiry']}",
-            "color": color,
-            "fields": fields,
-            "footer": {"text": f"Position {pos['id']}"},
-        }],
-    })
+    rows = "".join([
+        _row("Position", f"{pos['contracts']}x {pos['ticker']} ${pos['strike']:.0f} {direction}"),
+        _row("Expiry", f"{pos['expiry']} ({pos['dte_at_entry']} DTE)"),
+        _row("Entry price", f"${pos['entry_price']:.2f}/share"),
+        _row("Total cost", f"${pos['cost']:.2f}"),
+        _row("Conviction", tier),
+        _row("Regime", pos.get("regime_at_entry", "?")),
+    ])
+    if reasons:
+        rows += _row("Signal", " · ".join(reasons))
+
+    body_html = f"""<html><body style="font-family:-apple-system,sans-serif;color:#111;">
+<div style="border-left:4px solid {accent};padding:0 0 0 16px;margin:8px 0;">
+<h2 style="margin:0 0 4px 0;color:{accent};">Trade Opened</h2>
+<p style="margin:0 0 12px 0;color:#666;font-size:13px;">Position {pos['id']}</p>
+<table style="border-collapse:collapse;">{rows}</table>
+</div></body></html>"""
+
+    body_text = "\n".join([
+        f"BOUGHT {pos['contracts']}x {pos['ticker']} ${pos['strike']:.0f} {direction} exp {pos['expiry']}",
+        f"  Entry:     ${pos['entry_price']:.2f}/sh   Total: ${pos['cost']:.2f}",
+        f"  DTE:       {pos['dte_at_entry']}",
+        f"  Tier:      {tier}",
+        f"  Regime:    {pos.get('regime_at_entry', '?')}",
+        f"  Signal:    {' · '.join(reasons)}" if reasons else "",
+        f"  Position:  {pos['id']}",
+    ])
+    _send(subject, body_html, body_text)
 
 
 def trade_closed(pos: dict) -> None:
@@ -63,23 +97,34 @@ def trade_closed(pos: dict) -> None:
 
     pnl = pos.get("pnl", 0)
     pnl_pct = pos.get("pnl_pct", 0)
-    color = 0x22C55E if pnl >= 0 else 0xEF4444   # green / red
+    accent = "#22c55e" if pnl >= 0 else "#ef4444"
     reason = pos.get("exit_reason", "closed").replace("_", " ").upper()
     sign = "+" if pnl >= 0 else ""
+    outcome = "PROFIT" if pnl >= 0 else "LOSS"
 
-    fields = [
-        {"name": "Exit reason", "value": reason, "inline": True},
-        {"name": "Exit", "value": f"${pos.get('exit_price', 0):.2f}/sh", "inline": True},
-        {"name": "P&L", "value": f"{sign}${pnl:.2f} ({sign}{pnl_pct:.1f}%)", "inline": True},
-        {"name": "Held", "value": f"{pos['contracts']} contract(s)", "inline": True},
-    ]
+    subject = (
+        f"[Trade Agent] CLOSED {pos['ticker']} ${pos['strike']:.0f}"
+        f"{pos['option_type'][0].upper()} — {outcome} {sign}${pnl:.0f}"
+    )
 
-    _post({
-        "username": "Trade Agent",
-        "embeds": [{
-            "title": f"CLOSED {pos['ticker']} ${pos['strike']:.0f} {pos['option_type'].upper()}",
-            "color": color,
-            "fields": fields,
-            "footer": {"text": f"Position {pos['id']}"},
-        }],
-    })
+    rows = "".join([
+        _row("Position", f"{pos['contracts']}x {pos['ticker']} ${pos['strike']:.0f} {pos['option_type'].upper()}"),
+        _row("Exit reason", reason),
+        _row("Exit price", f"${pos.get('exit_price', 0):.2f}/share"),
+        _row("P&L", f"{sign}${pnl:.2f} ({sign}{pnl_pct:.1f}%)"),
+    ])
+
+    body_html = f"""<html><body style="font-family:-apple-system,sans-serif;color:#111;">
+<div style="border-left:4px solid {accent};padding:0 0 0 16px;margin:8px 0;">
+<h2 style="margin:0 0 4px 0;color:{accent};">Trade Closed — {outcome}</h2>
+<p style="margin:0 0 12px 0;color:#666;font-size:13px;">Position {pos['id']}</p>
+<table style="border-collapse:collapse;">{rows}</table>
+</div></body></html>"""
+
+    body_text = "\n".join([
+        f"CLOSED {pos['ticker']} ${pos['strike']:.0f} {pos['option_type'].upper()}",
+        f"  Exit:    ${pos.get('exit_price', 0):.2f}/sh  ({reason})",
+        f"  P&L:     {sign}${pnl:.2f} ({sign}{pnl_pct:.1f}%)",
+        f"  Position: {pos['id']}",
+    ])
+    _send(subject, body_html, body_text)
