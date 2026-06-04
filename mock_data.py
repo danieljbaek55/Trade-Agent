@@ -14,7 +14,7 @@ _RNG = np.random.default_rng(42)
 BASE_PRICES = {"SPY": 530.0, "QQQ": 455.0}
 ANNUAL_VOL = 0.16       # 16% annualized volatility
 ANNUAL_RET = 0.10       # 10% drift
-TRADING_DAYS = 126      # ~6 months
+TRADING_DAYS = 252      # ~1 year (needed for 200-day MA regime filter)
 
 
 def _gbm_path(s0: float, n: int) -> np.ndarray:

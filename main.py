@@ -4,12 +4,13 @@ Options Trading Agent — Paper Simulation
 Account: $800 | Max $100/contract | SPY & QQQ | 30–180 DTE
 
 Usage:
-  python main.py run      # check exits + scan for new trades  (default)
-  python main.py scan     # scan for new trades only
-  python main.py exits    # check existing positions for stop-loss / take-profit
-  python main.py status   # portfolio snapshot
-  python main.py history  # closed trade log
-  python main.py reset    # wipe portfolio and start fresh
+  python main.py run        # check exits + scan for new trades  (default)
+  python main.py scan       # scan for new trades only
+  python main.py exits      # check existing positions for stop-loss / take-profit
+  python main.py status     # portfolio snapshot
+  python main.py history    # closed trade log
+  python main.py analytics  # postmortem stats: win rate, expectancy, by signal type
+  python main.py reset      # wipe portfolio and start fresh
 """
 import sys
 import os
@@ -23,6 +24,7 @@ except ImportError:
 
 import agent
 import portfolio as port
+import postmortem
 import config
 
 
@@ -57,6 +59,38 @@ def cmd_history():
     print(f"  Total P&L: ${total:+.2f}\n")
 
 
+def cmd_analytics():
+    pf = port.load()
+    closed = pf.get("closed_trades", [])
+    stats = postmortem.analyze(closed)
+
+    if stats.get("count", 0) == 0:
+        print("No closed trades yet — analytics will populate once positions exit.")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"  POSTMORTEM ANALYTICS  ({stats['count']} closed trades)")
+    print(f"{'='*60}")
+    print(f"  Win rate         : {stats['win_rate_pct']}%  ({stats['wins']}W / {stats['losses']}L)")
+    print(f"  Total P&L        : ${stats['total_pnl']:+.2f}")
+    print(f"  ROI on basis     : {stats['roi_pct']:+.1f}%")
+    print(f"  Avg win          : ${stats['avg_win']:+.2f}")
+    print(f"  Avg loss         : ${stats['avg_loss']:+.2f}")
+    print(f"  Expectancy/trade : ${stats['expectancy_per_trade']:+.2f}")
+
+    print(f"\n  Outcome breakdown:")
+    for outcome, n in sorted(stats["by_outcome"].items(), key=lambda x: -x[1]):
+        print(f"    {outcome:<22} {n}")
+
+    print(f"\n  By signal type:")
+    for sig_type, b in stats["by_signal_type"].items():
+        print(
+            f"    {sig_type.upper():<6} {b['trades']:3} trades | "
+            f"{b['win_rate_pct']:5.1f}% win | ${b['total_pnl']:+.2f}"
+        )
+    print()
+
+
 def cmd_reset():
     if os.path.exists(config.PORTFOLIO_FILE):
         os.remove(config.PORTFOLIO_FILE)
@@ -71,6 +105,7 @@ COMMANDS = {
     "exits": agent.check_exits,
     "status": lambda: agent.print_status(port.load()),
     "history": cmd_history,
+    "analytics": cmd_analytics,
     "reset": cmd_reset,
 }
 

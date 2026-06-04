@@ -13,6 +13,9 @@ import signals
 import options_scanner
 import portfolio as port
 import config
+import greeks
+import market_regime
+import postmortem
 
 init(autoreset=True)
 
@@ -204,14 +207,24 @@ def scan_and_trade():
         price = float(df["Close"].iloc[-1])
         rsi_val = df["rsi"].iloc[-1]
         sig = signals.generate_signal(df)
+        regime = market_regime.detect_regime(df)
 
-        print(f"${price:.2f} | RSI {rsi_val:.1f} | {_color_signal(sig['signal'])}")
+        print(f"${price:.2f} | RSI {rsi_val:.1f} | regime {regime['regime']} | {_color_signal(sig['signal'])}")
         if sig["reasons"]:
             print(f"         {' | '.join(sig['reasons'])}")
 
         if sig["signal"] == "hold" or sig["strength"] < 2:
             print()
             continue
+
+        # Regime filter — block trades against the prevailing trend
+        if config.USE_REGIME_FILTER:
+            if sig["signal"] == "buy_call" and not regime["allow_calls"]:
+                print(f"         {Fore.YELLOW}Skipped — calls blocked in {regime['regime']} regime{Style.RESET_ALL}\n")
+                continue
+            if sig["signal"] == "buy_put" and not regime["allow_puts"]:
+                print(f"         {Fore.YELLOW}Skipped — puts blocked in {regime['regime']} regime{Style.RESET_ALL}\n")
+                continue
 
         if not port.can_open(pf):
             print(f"         {Fore.YELLOW}Skipped — max positions or insufficient cash{Style.RESET_ALL}\n")
@@ -236,6 +249,8 @@ def scan_and_trade():
             continue
 
         best["signal_reasons"] = sig["reasons"]
+        best["regime_at_entry"] = regime["regime"]
+        best["greeks"] = greeks.estimate_greeks_for_option(best, price)
         _open_position(pf, best)
 
     print_status(pf)
@@ -267,5 +282,21 @@ def _open_position(pf: dict, opt: dict):
         f"ID {pos['id']} | {pos['ticker']} ${pos['strike']} {pos['option_type'].upper()} "
         f"exp {pos['expiry']} | ${pos['entry_price']:.2f}/sh = ${pos['cost']:.2f} | "
         f"DTE {pos['dte_at_entry']}"
+    )
+    g = pos.get("greeks") or {}
+    if g:
+        # Per-contract: delta*100 shares = $ move per $1 underlying; theta*100 = daily decay
+        delta_dollars = g["delta"] * 100
+        theta_dollars = g["theta"] * 100
+        print(
+            f"         Greeks: Δ {g['delta']:+.3f} (≈${delta_dollars:+.0f}/$1 move) | "
+            f"Θ ${theta_dollars:+.2f}/day | "
+            f"Γ {g['gamma']:.4f} | ν ${g['vega']:.2f}/1%IV"
+        )
+    risk_ref = config.ACCOUNT_SIZE * config.RISK_REFERENCE_PCT
+    actual_risk_pct = pos["cost"] / config.ACCOUNT_SIZE * 100
+    print(
+        f"         Risk: ${pos['cost']:.0f} = {actual_risk_pct:.1f}% of account "
+        f"(1% rule = ${risk_ref:.0f})"
     )
     print()

@@ -25,7 +25,15 @@ MACD_SIGNAL = 9
 EMA_SHORT = 20
 EMA_LONG = 50
 
-DATA_PERIOD = "6mo"
+DATA_PERIOD = "1y"
 DATA_INTERVAL = "1d"
+
+# Regime filter — block trades against the prevailing trend.
+# Set to False to ignore regime and trade purely on indicator signals.
+USE_REGIME_FILTER = True
+
+# Risk-per-trade reference (Kelly / 1% rule from claude-trading-skills).
+# Not enforced — surfaced for awareness.  $800 × 1% = $8 max loss per trade.
+RISK_REFERENCE_PCT = 0.01
 
 PORTFOLIO_FILE = "portfolio.json"

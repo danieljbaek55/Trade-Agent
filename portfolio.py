@@ -49,6 +49,8 @@ def open_trade(portfolio: dict, opt: dict) -> dict:
         "cost": opt["total_cost"],
         "status": "open",
         "signal_reasons": opt.get("signal_reasons", []),
+        "regime_at_entry": opt.get("regime_at_entry"),
+        "greeks_at_entry": opt.get("greeks"),
         "order_id": opt.get("order_id"),
         "occ_symbol": opt.get("occ_symbol"),
     }
