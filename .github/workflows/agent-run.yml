@@ -31,6 +31,8 @@ on:
     - cron: "0 15 * * 1-5"
     # Hourly exit checks — 16:00–20:00 UTC = 12 PM–4 PM EDT (11 AM–3 PM EST)
     - cron: "0 16-20 * * 1-5"
+    # Pre-close exit sweep — 19:55 / 20:55 UTC = ~3:55 PM ET (one fires per DST regime)
+    - cron: "55 19,20 * * 1-5"
   workflow_dispatch:
     inputs:
       mode:
@@ -101,6 +103,7 @@ jobs:
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           echo "=== ${{ steps.cmd.outputs.label }} ===" | tee run.log
           python main.py ${{ steps.cmd.outputs.command }} 2>&1 | tee -a run.log
