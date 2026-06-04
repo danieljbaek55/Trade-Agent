@@ -73,11 +73,13 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Restore portfolio state from previous run
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v9
+        continue-on-error: true
         with:
           name: portfolio-state
           workflow: ${{ github.workflow }}
           if_no_artifact_found: ignore
+          search_artifacts: true
           path: .
 
       - name: Decide command
