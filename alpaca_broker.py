@@ -104,15 +104,15 @@ def occ_symbol(opt: dict) -> str:
     return _make_occ(opt["ticker"], opt["expiry"], opt["option_type"], opt["strike"])
 
 
-def submit_buy(opt: dict, limit_price: float) -> dict:
-    """Submit a limit buy order for one options contract. Returns order info dict."""
+def submit_buy(opt: dict, limit_price: float, qty: int = 1) -> dict:
+    """Submit a limit buy order for `qty` options contracts."""
     from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
     symbol = occ_symbol(opt)
     req = LimitOrderRequest(
         symbol=symbol,
-        qty=1,
+        qty=qty,
         side=OrderSide.BUY,
         time_in_force=TimeInForce.DAY,
         limit_price=round(limit_price, 2),
@@ -122,24 +122,25 @@ def submit_buy(opt: dict, limit_price: float) -> dict:
         "order_id": str(order.id),
         "status": str(order.status),
         "symbol": symbol,
+        "qty": qty,
         "limit_price": limit_price,
     }
 
 
-def submit_close(occ: str, limit_price: float) -> dict:
-    """Submit a limit sell order to close one contract position."""
+def submit_close(occ: str, limit_price: float, qty: int = 1) -> dict:
+    """Submit a limit sell order to close `qty` contracts."""
     from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
     req = LimitOrderRequest(
         symbol=occ,
-        qty=1,
+        qty=qty,
         side=OrderSide.SELL,
         time_in_force=TimeInForce.DAY,
         limit_price=round(limit_price, 2),
     )
     order = _trading_client().submit_order(req)
-    return {"order_id": str(order.id), "status": str(order.status)}
+    return {"order_id": str(order.id), "status": str(order.status), "qty": qty}
 
 
 # ---------------------------------------------------------------------------

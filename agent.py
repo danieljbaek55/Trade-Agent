@@ -77,15 +77,15 @@ def print_status(pf: dict):
 
     # Always show local log (orders submitted + closed trades)
     if positions:
-        print(f"\n  Local order log — {len(positions)} pending/open:")
-        print(f"  {'ID':<10}{'TICKER':<7}{'TYPE':<6}{'STRIKE':<9}{'EXPIRY':<13}{'ENTRY $':<9}{'COST':<8}{'ORDER ID'}")
-        print(f"  {'-'*62}")
+        print(f"\n  Local order log — {len(positions)} open position(s):")
+        print(f"  {'ID':<10}{'TICKER':<6}{'TYPE':<6}{'STRIKE':<8}{'EXPIRY':<12}{'QTY':<5}{'ENTRY':<8}{'COST':<9}{'TIER'}")
+        print(f"  {'-'*70}")
         for p in positions:
-            oid = (p.get("order_id") or "local")[:16]
+            tier = (p.get("conviction_tier") or "")[:14]
             print(
-                f"  {p['id']:<10}{p['ticker']:<7}{p['option_type'].upper():<6}"
-                f"${p['strike']:<8.1f}{p['expiry']:<13}${p['entry_price']:<8.2f}"
-                f"${p['cost']:<8.2f}{oid}"
+                f"  {p['id']:<10}{p['ticker']:<6}{p['option_type'].upper():<6}"
+                f"${p['strike']:<7.1f}{p['expiry']:<12}"
+                f"{p.get('contracts', 1):<5}${p['entry_price']:<7.2f}${p['cost']:<8.2f}{tier}"
             )
 
     if closed:
@@ -155,13 +155,14 @@ def check_exits():
 
 def _close_position(pf: dict, pos: dict, mid_price: float, reason: str):
     label = Fore.RED + "STOP LOSS" if reason == "stop_loss" else Fore.GREEN + "TAKE PROFIT"
+    contracts = int(pos.get("contracts", 1))
     print(f"    {label}{Style.RESET_ALL}", end=" → ")
 
     if _alpaca_enabled() and pos.get("order_id") and pos.get("occ_symbol"):
         try:
             import alpaca_broker
-            alpaca_broker.submit_close(pos["occ_symbol"], mid_price)
-            print(f"close order submitted to Alpaca", end=" | ")
+            alpaca_broker.submit_close(pos["occ_symbol"], mid_price, qty=contracts)
+            print(f"close order ({contracts}x) sent to Alpaca", end=" | ")
         except Exception as e:
             print(f"Alpaca close failed ({e}), logging locally", end=" | ")
 
@@ -174,25 +175,51 @@ def _close_position(pf: dict, pos: dict, mid_price: float, reason: str):
 # Signal scan + trade entry
 # ---------------------------------------------------------------------------
 
+def _size_position(tier: str, available_cash: float, cost_per_contract: float) -> int:
+    """
+    Return number of contracts to buy based on conviction tier.
+    Respects target deployment, available cash, and a 1-contract minimum.
+    """
+    if tier == "HIGH_CONVICTION":
+        target = config.ACCOUNT_SIZE * config.HIGH_CONVICTION_DEPLOY_PCT
+    elif tier == "STANDARD":
+        target = config.ACCOUNT_SIZE * config.STANDARD_DEPLOY_PCT
+    else:
+        return 0
+
+    if cost_per_contract <= 0 or available_cash < cost_per_contract:
+        return 0
+
+    n = max(1, int(target // cost_per_contract))
+    # Don't exceed cash
+    while n * cost_per_contract > available_cash and n > 0:
+        n -= 1
+    return n
+
+
 def scan_and_trade():
     pf = port.load()
     using_alpaca = _alpaca_enabled()
 
     mode = "Alpaca paper" if using_alpaca else "local simulation"
-    print(f"{Fore.CYAN}Scanning SPY/QQQ — {mode}{Style.RESET_ALL}")
+    tickers_str = "/".join(config.TICKERS)
+    print(f"{Fore.CYAN}Scanning {tickers_str} — {mode}{Style.RESET_ALL}")
+    print(f"Pretend account size: ${config.ACCOUNT_SIZE:.0f} | "
+          f"Min strength: {config.MIN_SIGNAL_STRENGTH} | "
+          f"High conviction at: {config.HIGH_CONVICTION_THRESHOLD}")
 
     if using_alpaca:
         try:
             import alpaca_broker
             acct = alpaca_broker.get_account()
-            cash = acct["cash"]
+            real_cash = acct["cash"]
+            print(f"Alpaca paper cash: ${real_cash:.2f} (real) | "
+                  f"Local pretend cash: ${pf['cash']:.2f}")
         except Exception:
-            cash = pf["cash"]
-    else:
-        cash = pf["cash"]
+            pass
 
     open_count = len(port.open_positions(pf))
-    print(f"Cash: ${cash:.2f} | Open: {open_count}/{config.MAX_POSITIONS}\n")
+    print(f"Pretend cash: ${pf['cash']:.2f} | Open: {open_count}/{config.MAX_POSITIONS}\n")
 
     for ticker in config.TICKERS:
         print(f"{Fore.CYAN}[{ticker}]{Style.RESET_ALL}", end=" ")
@@ -206,14 +233,23 @@ def scan_and_trade():
 
         price = float(df["Close"].iloc[-1])
         rsi_val = df["rsi"].iloc[-1]
-        sig = signals.generate_signal(df)
         regime = market_regime.detect_regime(df)
+        sig = signals.generate_signal(df, regime=regime)
 
-        print(f"${price:.2f} | RSI {rsi_val:.1f} | regime {regime['regime']} | {_color_signal(sig['signal'])}")
+        tier_color = (
+            Fore.MAGENTA if sig["tier"] == "HIGH_CONVICTION"
+            else Fore.GREEN if sig["tier"] == "STANDARD"
+            else Fore.YELLOW
+        )
+        print(
+            f"${price:.2f} | RSI {rsi_val:.1f} | regime {regime['regime']} | "
+            f"{_color_signal(sig['signal'])} | strength {sig['strength']:.1f} | "
+            f"{tier_color}{sig['tier']}{Style.RESET_ALL}"
+        )
         if sig["reasons"]:
             print(f"         {' | '.join(sig['reasons'])}")
 
-        if sig["signal"] == "hold" or sig["strength"] < 2:
+        if sig["tier"] == "NONE":
             print()
             continue
 
@@ -248,7 +284,15 @@ def scan_and_trade():
             print(f"         No suitable option found.\n")
             continue
 
+        contracts = _size_position(sig["tier"], pf["cash"], best["total_cost"])
+        if contracts <= 0:
+            print(f"         {Fore.YELLOW}Insufficient pretend cash for even 1 contract{Style.RESET_ALL}\n")
+            continue
+
+        best["contracts"] = contracts
         best["signal_reasons"] = sig["reasons"]
+        best["signal_strength"] = sig["strength"]
+        best["conviction_tier"] = sig["tier"]
         best["regime_at_entry"] = regime["regime"]
         best["greeks"] = greeks.estimate_greeks_for_option(best, price)
         _open_position(pf, best)
@@ -260,16 +304,17 @@ def _open_position(pf: dict, opt: dict):
     """Submit order to Alpaca (if configured) and log locally."""
     order_id = None
     occ = None
+    contracts = int(opt.get("contracts", 1))
 
     if _alpaca_enabled():
         try:
             import alpaca_broker
             occ = alpaca_broker.occ_symbol(opt)
-            result = alpaca_broker.submit_buy(opt, opt["mid_price"])
+            result = alpaca_broker.submit_buy(opt, opt["mid_price"], qty=contracts)
             order_id = result["order_id"]
             status = result["status"]
             print(f"         {Fore.GREEN}ORDER SENT TO ALPACA{Style.RESET_ALL} "
-                  f"OCC={occ} status={status}")
+                  f"OCC={occ} qty={contracts} status={status}")
         except Exception as e:
             print(f"         {Fore.YELLOW}Alpaca order failed ({e}) — logging locally{Style.RESET_ALL}")
 
@@ -277,26 +322,27 @@ def _open_position(pf: dict, opt: dict):
     opt["occ_symbol"] = occ
     pos = port.open_trade(pf, opt)
 
+    tier_color = Fore.MAGENTA if pos.get("conviction_tier") == "HIGH_CONVICTION" else Fore.GREEN
     print(
-        f"         {Fore.GREEN if order_id else ''}LOGGED:{Style.RESET_ALL} "
+        f"         {tier_color}{pos.get('conviction_tier','')}{Style.RESET_ALL} | "
         f"ID {pos['id']} | {pos['ticker']} ${pos['strike']} {pos['option_type'].upper()} "
-        f"exp {pos['expiry']} | ${pos['entry_price']:.2f}/sh = ${pos['cost']:.2f} | "
-        f"DTE {pos['dte_at_entry']}"
+        f"exp {pos['expiry']} | DTE {pos['dte_at_entry']}"
     )
-    g = pos.get("greeks") or {}
-    if g:
-        # Per-contract: delta*100 shares = $ move per $1 underlying; theta*100 = daily decay
-        delta_dollars = g["delta"] * 100
-        theta_dollars = g["theta"] * 100
-        print(
-            f"         Greeks: Δ {g['delta']:+.3f} (≈${delta_dollars:+.0f}/$1 move) | "
-            f"Θ ${theta_dollars:+.2f}/day | "
-            f"Γ {g['gamma']:.4f} | ν ${g['vega']:.2f}/1%IV"
-        )
-    risk_ref = config.ACCOUNT_SIZE * config.RISK_REFERENCE_PCT
-    actual_risk_pct = pos["cost"] / config.ACCOUNT_SIZE * 100
     print(
-        f"         Risk: ${pos['cost']:.0f} = {actual_risk_pct:.1f}% of account "
-        f"(1% rule = ${risk_ref:.0f})"
+        f"         {pos['contracts']} contract(s) × ${pos['entry_price']:.2f}/sh = "
+        f"${pos['cost']:.2f} total"
+    )
+    g = pos.get("greeks_at_entry") or {}
+    if g:
+        # Per-position dollar Greeks (delta*100*contracts → $/share-move; theta*100*contracts → $/day)
+        per = pos["contracts"]
+        print(
+            f"         Greeks (position): Δ ≈${g['delta']*100*per:+.0f}/$1 move | "
+            f"Θ ${g['theta']*100*per:+.2f}/day | "
+            f"ν ${g['vega']*per:.2f}/1%IV"
+        )
+    risk_pct = pos["cost"] / config.ACCOUNT_SIZE * 100
+    print(
+        f"         Risk: ${pos['cost']:.0f} = {risk_pct:.1f}% of ${config.ACCOUNT_SIZE:.0f} account"
     )
     print()
