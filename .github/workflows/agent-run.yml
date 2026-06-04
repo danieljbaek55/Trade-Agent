@@ -1,35 +1,49 @@
 # =============================================================================
 # Trade Agent — scheduled paper-trading runs
 # =============================================================================
-# Runs twice per US trading day:
-#   - 10:30 AM ET → main scan + signal evaluation
-#   - 3:00  PM ET → exit check (stop-loss / take-profit)
+# Two cadences:
+#   - DAILY 11:00 AM ET (EDT) / 10:00 AM ET (EST) → full scan + entries
+#   - HOURLY 12 PM – 4 PM ET                      → exit checks only
 #
-# Cron is in UTC. Times below cover both EDT (UTC-4) and EST (UTC-5) by
-# choosing slots that land inside market hours regardless of DST.
+# Why split: daily indicators (RSI/MACD/EMA) don't change intraday, so an
+# entry scan more than once a day evaluates identical signal state. But
+# price-driven exits (stop-loss / take-profit) can trigger anytime, so
+# hourly exit checks are genuinely useful.
+#
+# Cron is in UTC. The slots below stay inside US market hours regardless
+# of daylight savings, and the agent's market_is_open() check handles
+# holidays / half-days by exiting cleanly.
 #
 # -----------------------------------------------------------------------------
-# Setup checklist (one time):
-#   1. Push the workflow file to the repo's default branch (main).
-#      Scheduled workflows in GitHub Actions ONLY fire from the default branch.
-#   2. Repo → Settings → Secrets and variables → Actions → New repository secret
+# Setup (one time):
+#   1. Repo → Settings → Secrets and variables → Actions → New repository secret
 #        ALPACA_API_KEY     → paper trading key
 #        ALPACA_API_SECRET  → paper trading secret
-#   3. Actions tab → "Trade Agent" → "Run workflow" to test manually
-#
-# Portfolio state persistence:
-#   `portfolio.json` is uploaded as an artifact after every run and downloaded
-#   at the start of the next run. Retention is 90 days; trade history older
-#   than that lives only on Alpaca's side.
+#   2. Workflow file must live on the default branch (main) for cron to fire.
+#   3. Actions tab → "Trade Agent" → "Run workflow" to test manually.
 # =============================================================================
 
 name: Trade Agent
 
 on:
   schedule:
-    - cron: "30 14 * * 1-5"   # 10:30 ET (EDT) / 9:30 ET (EST) — main scan
-    - cron: "0 19 * * 1-5"    # 3:00 PM ET (EDT) / 2:00 PM ET (EST) — exit check
-  workflow_dispatch: {}        # manual trigger button
+    # Daily full scan + entries — 15:00 UTC = 11:00 AM EDT / 10:00 AM EST
+    - cron: "0 15 * * 1-5"
+    # Hourly exit checks — 16:00–20:00 UTC = 12 PM–4 PM EDT (11 AM–3 PM EST)
+    - cron: "0 16-20 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Which command to run"
+        required: false
+        default: "run"
+        type: choice
+        options:
+          - run
+          - exits
+          - scan
+          - status
+          - analytics
 
 permissions:
   contents: read
@@ -66,14 +80,30 @@ jobs:
           if_no_artifact_found: ignore
           path: .
 
-      - name: Run agent
+      - name: Decide command
+        id: cmd
+        run: |
+          # Manual trigger uses the input; scheduled runs branch by cron
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "command=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+            echo "label=manual (${{ inputs.mode }})" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 15 * * 1-5" ]; then
+            echo "command=run" >> "$GITHUB_OUTPUT"
+            echo "label=daily scan + entries" >> "$GITHUB_OUTPUT"
+          else
+            echo "command=exits" >> "$GITHUB_OUTPUT"
+            echo "label=hourly exit check" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run agent (${{ steps.cmd.outputs.label }})
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
         run: |
-          python main.py run | tee run.log
-          echo "---"
-          python main.py status | tee -a run.log
+          echo "=== ${{ steps.cmd.outputs.label }} ===" | tee run.log
+          python main.py ${{ steps.cmd.outputs.command }} 2>&1 | tee -a run.log
+          echo "---" | tee -a run.log
+          python main.py status 2>&1 | tee -a run.log
 
       - name: Save portfolio state
         if: always()
