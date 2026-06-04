@@ -2,7 +2,7 @@
 # Trade Agent — scheduled paper-trading runs
 # =============================================================================
 # Two cadences:
-#   - DAILY 11:00 AM ET (EDT) / 10:00 AM ET (EST) → full scan + entries
+#   - DAILY 9:00 AM ET (EDT) / 8:00 AM ET (EST)   → full scan + entries (early to absorb runner delays)
 #   - HOURLY 12 PM – 4 PM ET                      → exit checks only
 #
 # Why split: daily indicators (RSI/MACD/EMA) don't change intraday, so an
@@ -27,8 +27,9 @@ name: Trade Agent
 
 on:
   schedule:
-    # Daily full scan + entries — 15:00 UTC = 11:00 AM EDT / 10:00 AM EST
-    - cron: "0 15 * * 1-5"
+    # Daily full scan + entries — 13:00 UTC = 9:00 AM EDT / 8:00 AM EST
+    # Shifted early to absorb GitHub Actions queue delays (can run up to 2-3h late)
+    - cron: "0 13 * * 1-5"
     # Hourly exit checks — 16:00–20:00 UTC = 12 PM–4 PM EDT (11 AM–3 PM EST)
     - cron: "0 16-20 * * 1-5"
     # Pre-close exit sweep — 19:55 / 20:55 UTC = ~3:55 PM ET (one fires per DST regime)
@@ -91,7 +92,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "command=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
             echo "label=manual (${{ inputs.mode }})" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 15 * * 1-5" ]; then
+          elif [ "${{ github.event.schedule }}" = "0 13 * * 1-5" ]; then
             echo "command=run" >> "$GITHUB_OUTPUT"
             echo "label=daily scan + entries" >> "$GITHUB_OUTPUT"
           else
