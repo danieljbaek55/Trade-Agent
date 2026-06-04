@@ -43,6 +43,15 @@ def get_account() -> dict:
     }
 
 
+def is_market_open() -> bool:
+    """True when US equity market is currently open per Alpaca's clock."""
+    try:
+        clock = _trading_client().get_clock()
+        return bool(clock.is_open)
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Market data
 # ---------------------------------------------------------------------------

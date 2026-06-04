@@ -32,6 +32,17 @@ def _alpaca_enabled() -> bool:
     return _USE_ALPACA
 
 
+def market_is_open() -> bool:
+    """Skip cron runs when market is closed. Returns True if no Alpaca configured."""
+    if not _alpaca_enabled():
+        return True   # local sim mode — always allow
+    try:
+        import alpaca_broker
+        return alpaca_broker.is_market_open()
+    except Exception:
+        return True   # if check fails, fall through and let the scan handle errors
+
+
 def _color_signal(sig: str) -> str:
     colors = {"buy_call": Fore.GREEN, "buy_put": Fore.RED}
     label = {"buy_call": "BUY CALL", "buy_put": "BUY PUT"}.get(sig, "HOLD")

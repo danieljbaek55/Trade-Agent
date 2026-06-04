@@ -99,8 +99,17 @@ def cmd_reset():
         print("No portfolio file found — already clean.")
 
 
+def cmd_run():
+    """Default run: exits + scan, but skip silently if market is closed."""
+    if not agent.market_is_open():
+        print("Market closed — skipping run.")
+        return
+    agent.check_exits()
+    agent.scan_and_trade()
+
+
 COMMANDS = {
-    "run": lambda: (agent.check_exits(), agent.scan_and_trade()),
+    "run": cmd_run,
     "scan": agent.scan_and_trade,
     "exits": agent.check_exits,
     "status": lambda: agent.print_status(port.load()),

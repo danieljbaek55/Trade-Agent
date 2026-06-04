@@ -1,0 +1,95 @@
+# =============================================================================
+# Trade Agent — scheduled paper-trading runs
+# =============================================================================
+# Runs twice per US trading day:
+#   - 10:30 AM ET → main scan + signal evaluation
+#   - 3:00  PM ET → exit check (stop-loss / take-profit)
+#
+# Cron is in UTC. Times below cover both EDT (UTC-4) and EST (UTC-5) by
+# choosing slots that land inside market hours regardless of DST.
+#
+# -----------------------------------------------------------------------------
+# Setup checklist (one time):
+#   1. Push the workflow file to the repo's default branch (main).
+#      Scheduled workflows in GitHub Actions ONLY fire from the default branch.
+#   2. Repo → Settings → Secrets and variables → Actions → New repository secret
+#        ALPACA_API_KEY     → paper trading key
+#        ALPACA_API_SECRET  → paper trading secret
+#   3. Actions tab → "Trade Agent" → "Run workflow" to test manually
+#
+# Portfolio state persistence:
+#   `portfolio.json` is uploaded as an artifact after every run and downloaded
+#   at the start of the next run. Retention is 90 days; trade history older
+#   than that lives only on Alpaca's side.
+# =============================================================================
+
+name: Trade Agent
+
+on:
+  schedule:
+    - cron: "30 14 * * 1-5"   # 10:30 ET (EDT) / 9:30 ET (EST) — main scan
+    - cron: "0 19 * * 1-5"    # 3:00 PM ET (EDT) / 2:00 PM ET (EST) — exit check
+  workflow_dispatch: {}        # manual trigger button
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: trade-agent
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore portfolio state from previous run
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: portfolio-state
+          workflow: ${{ github.workflow }}
+          if_no_artifact_found: ignore
+          path: .
+
+      - name: Run agent
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+        run: |
+          python main.py run | tee run.log
+          echo "---"
+          python main.py status | tee -a run.log
+
+      - name: Save portfolio state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-state
+          path: portfolio.json
+          retention-days: 90
+          overwrite: true
+          if-no-files-found: ignore
+
+      - name: Save run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log-${{ github.run_id }}
+          path: run.log
+          retention-days: 30
+          if-no-files-found: ignore
