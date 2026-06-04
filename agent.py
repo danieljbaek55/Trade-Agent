@@ -16,6 +16,7 @@ import config
 import greeks
 import market_regime
 import postmortem
+import notify
 
 init(autoreset=True)
 
@@ -180,6 +181,7 @@ def _close_position(pf: dict, pos: dict, mid_price: float, reason: str):
     closed = port.close_trade(pf, pos["id"], mid_price, reason)
     pnl = closed.get("pnl", 0)
     print(f"P&L ${pnl:+.2f} ({closed.get('pnl_pct', 0):+.1f}%)")
+    notify.trade_closed(closed)
 
 
 # ---------------------------------------------------------------------------
@@ -356,4 +358,5 @@ def _open_position(pf: dict, opt: dict):
     print(
         f"         Risk: ${pos['cost']:.0f} = {risk_pct:.1f}% of ${config.ACCOUNT_SIZE:.0f} account"
     )
+    notify.trade_opened(pos)
     print()
